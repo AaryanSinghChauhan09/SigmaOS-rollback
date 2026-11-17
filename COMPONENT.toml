@@ -3,7 +3,7 @@ name = "SigmaOS-rollback"
 tier = 2
 stability = "scaffold"
 language = "rust"
-description = "rollback component"
+description = "System rollback: BTRFS snapshot management, pre-update snapshots, restore on failure"
 upstream = []
 
 [contract]
