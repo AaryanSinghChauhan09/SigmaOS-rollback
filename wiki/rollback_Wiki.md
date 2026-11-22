@@ -1,18 +1,18 @@
-# SigmaOS-SigmaOS-rollback Component Wiki
+# SigmaOS-rollback Component Wiki
 
 ## Overview
-SigmaOS-SigmaOS-rollback provides System rollback: BTRFS snapshot management, pre-update snapshots, restore on failure for the SigmaOS operating system. It demonstrates the subsystem and integration within the SigmaOS ecosystem, following the principles of clear abstraction and deterministic initialization.
+SigmaOS-rollback provides component for the SigmaOS operating system. It demonstrates the subsystem and integration within the SigmaOS ecosystem, following the principles of clear abstraction and deterministic initialization.
 
 ## Principles
-- Single Responsibility
-- SigmaOS-rollback Abstraction
-- Fail-Fast on SigmaOS-rollback Initialization Errors
-- Deterministic SigmaOS-rollback Setup
-- Clear Abstraction Over SigmaOS-rollback APIs
-- Composition over Inheritance for SigmaOS-rollback extensions
+- **Single Responsibility**: Each component has a single well-defined purpose
+- **SigmaOS-rollback Abstraction**: Clear abstraction over the component's APIs and functionality
+- **Fail-Fast on SigmaOS-rollback Initialization Errors**: Fail-fast principle for initialization errors
+- **Deterministic SigmaOS-rollback Setup**: Deterministic initialization and configuration
+- **Clear Abstraction Over SigmaOS-rollback APIs**: Well-defined, clear APIs
+- **Composition over Inheritance for SigmaOS-rollback extensions**: Use composition patterns for extensions
 
 ## Architecture
-SigmaOS-SigmaOS-rollback follows a SigmaOS-rollback pattern:
+SigmaOS-rollback follows a SigmaOS-rollback pattern:
 - **SigmaOS-rollback Core**: Provides SigmaOS-rollback support, SigmaOS-rollback management, and SigmaOS-rollback tracking
 - **Management**: Supports SigmaOS-rollback management, SigmaOS-rollback configuration, and SigmaOS-rollback lifecycle
 - **Tracking**: Supports SigmaOS-rollback status, SigmaOS-rollback tracking, and SigmaOS-rollback lifecycle
@@ -20,10 +20,10 @@ SigmaOS-SigmaOS-rollback follows a SigmaOS-rollback pattern:
 
 ## API
 The component provides the following public APIs:
--  - Manage a SigmaOS-rollback by given configuration
--  - Register a SigmaOS-rollback by given name
--  - Get SigmaOS-rollback status and SigmaOS-rollback availability
--  - Track SigmaOS-rollback management and SigmaOS-rollback tracking
+- Manage a SigmaOS-rollback by given configuration
+- Register a SigmaOS-rollback by given name
+- Get SigmaOS-rollback status and SigmaOS-rollback availability
+- Track SigmaOS-rollback management and SigmaOS-rollback tracking
 - Error types for SigmaOS-rollback failure scenarios or unsupported SigmaOS-rollback types
 
 ## Test Structure (Arrange-Act-ASSERT)
@@ -32,11 +32,8 @@ All tests follow the AAA pattern:
 2. **Act**: Execute the code under test (SigmaOS-rollback init, SigmaOS-rollback management)
 3. **Assert**: Verify the expected SigmaOS-rollback results
 
-Example:
-
-
 ## Development
-- Follows Rust best practices with 
+- Follows best practices with clear abstraction boundaries
 - SigmaOS-rollback initialization is best-effort; gracefully degrades on unsupported configurations
 - Comprehensive error types for all SigmaOS-rollback failure scenarios
 - Unit tests provided for SigmaOS-rollback management and configuration
