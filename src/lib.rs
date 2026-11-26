@@ -1,6 +1,12 @@
-//! SigmaOS rollback component
+//! SigmaOS rollback component.
+//!
+//! Pacman-style transaction journal: callers record the changes a
+//! transaction made, and `rollback_last` yields the inverse steps so the
+//! most recent transaction can be undone.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+
+use std::collections::VecDeque;
 
 use thiserror::Error;
 
@@ -13,10 +19,159 @@ pub enum ComponentError {
     /// Unsupported operation.
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
+    /// No transaction to roll back.
+    #[error("no transaction to roll back")]
+    NothingToRollBack,
+    /// Transaction id already in use.
+    #[error("duplicate transaction id: {0}")]
+    DuplicateId(String),
 }
 
 /// Result alias.
 pub type ComponentResult<T> = Result<T, ComponentError>;
+
+/// The kind of change a transaction step performed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Installed something (package, file set).
+    Install,
+    /// Removed something.
+    Remove,
+    /// Modified a file; `backup` holds the pre-change copy location.
+    Modify {
+        /// Path to the saved backup of the original content.
+        backup: String,
+    },
+}
+
+/// One recorded change inside a transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    /// What was done.
+    pub action: Action,
+    /// What it was done to (package name, file path, ...).
+    pub target: String,
+}
+
+/// The inverse of a step, returned by rollback planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InverseStep {
+    /// Action needed to undo the original step.
+    pub action: Action,
+    /// Target the inverse applies to.
+    pub target: String,
+}
+
+/// A named group of changes applied together.
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    /// Caller-chosen identifier.
+    pub id: String,
+    /// Steps applied, in order.
+    pub steps: Vec<Step>,
+    /// Whether this transaction has been rolled back.
+    pub rolled_back: bool,
+}
+
+/// Bounded journal of transactions with rollback planning.
+#[derive(Debug, Default)]
+pub struct RollbackManager {
+    journal: VecDeque<Transaction>,
+    capacity: usize,
+    next_id: u64,
+}
+
+impl RollbackManager {
+    /// Create a manager keeping at most `capacity` transactions.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            journal: VecDeque::new(),
+            capacity: capacity.max(1),
+            next_id: 1,
+        }
+    }
+
+    /// Record a completed transaction.
+    pub fn record(&mut self, id: impl Into<String>, steps: Vec<Step>) -> ComponentResult<()> {
+        let id = id.into();
+        if self.journal.iter().any(|t| t.id == id) {
+            return Err(ComponentError::DuplicateId(id));
+        }
+        if self.journal.len() == self.capacity {
+            self.journal.pop_front();
+        }
+        self.journal.push_back(Transaction {
+            id,
+            steps,
+            rolled_back: false,
+        });
+        Ok(())
+    }
+
+    /// Generate an id for a new transaction (`txn-N`).
+    pub fn next_id(&mut self) -> String {
+        let id = format!("txn-{}", self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    /// Plan the rollback of the most recent non-rolled-back transaction.
+    ///
+    /// Returns the inverse steps in reverse order; the caller performs
+    /// them, then calls [`mark_rolled_back`](Self::mark_rolled_back).
+    pub fn rollback_last(&mut self) -> ComponentResult<Vec<InverseStep>> {
+        let txn = self
+            .journal
+            .iter_mut()
+            .rev()
+            .find(|t| !t.rolled_back)
+            .ok_or(ComponentError::NothingToRollBack)?;
+        let plan = txn
+            .steps
+            .iter()
+            .rev()
+            .map(|s| InverseStep {
+                action: match &s.action {
+                    Action::Install => Action::Remove,
+                    Action::Remove => Action::Install,
+                    Action::Modify { backup } => Action::Modify {
+                        backup: backup.clone(),
+                    },
+                },
+                target: s.target.clone(),
+            })
+            .collect();
+        txn.rolled_back = true;
+        Ok(plan)
+    }
+
+    /// Mark the transaction with `id` as rolled back without producing a
+    /// plan (e.g. rollback was performed by an external tool).
+    pub fn mark_rolled_back(&mut self, id: &str) -> ComponentResult<()> {
+        let txn = self
+            .journal
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or_else(|| ComponentError::DuplicateId(id.to_string()))?;
+        txn.rolled_back = true;
+        Ok(())
+    }
+
+    /// All transactions, oldest first.
+    pub fn history(&self) -> std::collections::vec_deque::Iter<'_, Transaction> {
+        self.journal.iter()
+    }
+
+    /// Number of transactions retained.
+    pub fn len(&self) -> usize {
+        self.journal.len()
+    }
+
+    /// Whether the journal is empty.
+    pub fn is_empty(&self) -> bool {
+        self.journal.is_empty()
+    }
+}
 
 /// Component handle.
 #[derive(Debug, Default, Clone)]
@@ -54,6 +209,7 @@ impl Component {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_new_not_ready() {
         assert!(!Component::new().is_ready());
@@ -80,5 +236,88 @@ mod tests {
         c.init().unwrap();
         c.reset();
         assert!(!c.is_ready());
+    }
+
+    #[test]
+    fn rollback_inverts_steps_in_reverse() {
+        let mut m = RollbackManager::new(8);
+        m.record(
+            "t1",
+            vec![
+                Step {
+                    action: Action::Install,
+                    target: "firefox".into(),
+                },
+                Step {
+                    action: Action::Modify {
+                        backup: "/bak/hosts".into(),
+                    },
+                    target: "/etc/hosts".into(),
+                },
+            ],
+        )
+        .unwrap();
+        let plan = m.rollback_last().unwrap();
+        assert_eq!(plan.len(), 2);
+        // reversed order, inverse actions
+        assert_eq!(plan[0].target, "/etc/hosts");
+        assert_eq!(
+            plan[0].action,
+            Action::Modify {
+                backup: "/bak/hosts".into()
+            }
+        );
+        assert_eq!(plan[1].action, Action::Remove);
+        assert_eq!(plan[1].target, "firefox");
+        // second call finds nothing new
+        assert!(matches!(
+            m.rollback_last(),
+            Err(ComponentError::NothingToRollBack)
+        ));
+    }
+
+    #[test]
+    fn rollback_skips_already_rolled_back() {
+        let mut m = RollbackManager::new(8);
+        m.record(
+            "a",
+            vec![Step {
+                action: Action::Install,
+                target: "x".into(),
+            }],
+        )
+        .unwrap();
+        m.record(
+            "b",
+            vec![Step {
+                action: Action::Remove,
+                target: "y".into(),
+            }],
+        )
+        .unwrap();
+        m.mark_rolled_back("b").unwrap();
+        let plan = m.rollback_last().unwrap();
+        assert_eq!(plan[0].target, "x");
+        assert_eq!(plan[0].action, Action::Remove);
+    }
+
+    #[test]
+    fn capacity_evicts_oldest() {
+        let mut m = RollbackManager::new(2);
+        for i in 0..3 {
+            m.record(format!("t{i}"), vec![]).unwrap();
+        }
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.history().next().unwrap().id, "t1");
+    }
+
+    #[test]
+    fn duplicate_id_rejected() {
+        let mut m = RollbackManager::new(8);
+        m.record("x", vec![]).unwrap();
+        assert!(matches!(
+            m.record("x", vec![]),
+            Err(ComponentError::DuplicateId(_))
+        ));
     }
 }
