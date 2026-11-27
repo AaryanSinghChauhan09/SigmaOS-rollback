@@ -1,8 +1,8 @@
 //! SigmaOS rollback component.
 //!
-//! Pacman-style transaction journal: callers record the changes a
-//! transaction made, and `rollback_last` yields the inverse steps so the
-//! most recent transaction can be undone.
+//! Transactional OS state journal: callers record the changes a
+//! transaction made, and `rollback_last` / `rollback_to_generation`
+//! yield the inverse steps so transactions can be atomically undone.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -25,6 +25,9 @@ pub enum ComponentError {
     /// Transaction id already in use.
     #[error("duplicate transaction id: {0}")]
     DuplicateId(String),
+    /// Transaction id not found in journal.
+    #[error("unknown transaction id: {0}")]
+    UnknownId(String),
 }
 
 /// Result alias.
@@ -115,19 +118,8 @@ impl RollbackManager {
         id
     }
 
-    /// Plan the rollback of the most recent non-rolled-back transaction.
-    ///
-    /// Returns the inverse steps in reverse order; the caller performs
-    /// them, then calls [`mark_rolled_back`](Self::mark_rolled_back).
-    pub fn rollback_last(&mut self) -> ComponentResult<Vec<InverseStep>> {
-        let txn = self
-            .journal
-            .iter_mut()
-            .rev()
-            .find(|t| !t.rolled_back)
-            .ok_or(ComponentError::NothingToRollBack)?;
-        let plan = txn
-            .steps
+    fn invert_steps(steps: &[Step]) -> Vec<InverseStep> {
+        steps
             .iter()
             .rev()
             .map(|s| InverseStep {
@@ -140,8 +132,45 @@ impl RollbackManager {
                 },
                 target: s.target.clone(),
             })
-            .collect();
+            .collect()
+    }
+
+    /// Plan the rollback of the most recent non-rolled-back transaction.
+    ///
+    /// Returns the inverse steps in reverse order; the caller performs
+    /// them, then calls [`mark_rolled_back`](Self::mark_rolled_back).
+    pub fn rollback_last(&mut self) -> ComponentResult<Vec<InverseStep>> {
+        let txn = self
+            .journal
+            .iter_mut()
+            .rev()
+            .find(|t| !t.rolled_back)
+            .ok_or(ComponentError::NothingToRollBack)?;
+        let plan = Self::invert_steps(&txn.steps);
         txn.rolled_back = true;
+        Ok(plan)
+    }
+
+    /// Plan atomic rollback of all active transactions recorded *after* `target_id`.
+    ///
+    /// Returns the combined inverse steps in reverse chronological order.
+    pub fn rollback_to_generation(&mut self, target_id: &str) -> ComponentResult<Vec<InverseStep>> {
+        let target_idx = self
+            .journal
+            .iter()
+            .position(|t| t.id == target_id)
+            .ok_or_else(|| ComponentError::UnknownId(target_id.to_string()))?;
+
+        let mut plan = Vec::new();
+        for txn in self.journal.iter_mut().skip(target_idx + 1).rev() {
+            if !txn.rolled_back {
+                plan.extend(Self::invert_steps(&txn.steps));
+                txn.rolled_back = true;
+            }
+        }
+        if plan.is_empty() {
+            return Err(ComponentError::NothingToRollBack);
+        }
         Ok(plan)
     }
 
@@ -152,7 +181,7 @@ impl RollbackManager {
             .journal
             .iter_mut()
             .find(|t| t.id == id)
-            .ok_or_else(|| ComponentError::DuplicateId(id.to_string()))?;
+            .ok_or_else(|| ComponentError::UnknownId(id.to_string()))?;
         txn.rolled_back = true;
         Ok(())
     }
@@ -319,5 +348,41 @@ mod tests {
             m.record("x", vec![]),
             Err(ComponentError::DuplicateId(_))
         ));
+    }
+
+    #[test]
+    fn test_unknown_id_rejected_aaa() {
+        // Arrange
+        let mut m = RollbackManager::new(8);
+        // Act
+        let res = m.mark_rolled_back("missing");
+        // Assert
+        assert!(matches!(res, Err(ComponentError::UnknownId(_))));
+    }
+
+    #[test]
+    fn test_rollback_to_generation_aaa() {
+        // Arrange
+        let mut m = RollbackManager::new(8);
+        m.record("gen-1", vec![Step { action: Action::Install, target: "base".into() }]).unwrap();
+        m.record("gen-2", vec![Step { action: Action::Install, target: "pkg-a".into() }]).unwrap();
+        m.record("gen-3", vec![Step { action: Action::Remove, target: "pkg-b".into() }]).unwrap();
+        // Act
+        let plan = m.rollback_to_generation("gen-1").unwrap();
+        // Assert
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0], InverseStep { action: Action::Install, target: "pkg-b".into() });
+        assert_eq!(plan[1], InverseStep { action: Action::Remove, target: "pkg-a".into() });
+    }
+
+    #[test]
+    fn test_rollback_to_generation_nothing_pending_aaa() {
+        // Arrange
+        let mut m = RollbackManager::new(8);
+        m.record("gen-1", vec![Step { action: Action::Install, target: "base".into() }]).unwrap();
+        // Act
+        let res = m.rollback_to_generation("gen-1");
+        // Assert
+        assert!(matches!(res, Err(ComponentError::NothingToRollBack)));
     }
 }
