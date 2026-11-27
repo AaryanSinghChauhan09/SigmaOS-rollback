@@ -385,4 +385,38 @@ mod tests {
         // Assert
         assert!(matches!(res, Err(ComponentError::NothingToRollBack)));
     }
+
+    #[test]
+    fn test_capacity_evicts_oldest_generation_aaa() {
+        // Arrange: cap=2, record 3 gens
+        let mut m = RollbackManager::new(2);
+        m.record("g1", vec![Step { action: Action::Install, target: "pkg-a".into() }]).unwrap();
+        m.record("g2", vec![Step { action: Action::Install, target: "pkg-b".into() }]).unwrap();
+        // Act: g1 should be evicted on g3 record
+        m.record("g3", vec![Step { action: Action::Install, target: "pkg-c".into() }]).unwrap();
+        // Assert: g1 is gone, g2 and g3 are present
+        assert!(matches!(
+            m.rollback_to_generation("g1"),
+            Err(ComponentError::UnknownId(_))
+        ));
+        // g3→g2 rollback should succeed
+        let plan = m.rollback_to_generation("g2").unwrap();
+        assert_eq!(plan.len(), 1);
+    }
+
+    #[test]
+    fn test_modify_step_inverts_to_modify_aaa() {
+        // Arrange: a Modify step should invert to itself (restore backup)
+        let mut m = RollbackManager::new(8);
+        m.record("g1", vec![]).unwrap();
+        m.record("g2", vec![Step {
+            action: Action::Modify { backup: "/sigma/backups/etc-hosts".into() },
+            target: "/etc/hosts".into(),
+        }]).unwrap();
+        // Act
+        let plan = m.rollback_to_generation("g1").unwrap();
+        // Assert
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].target, "/etc/hosts");
+    }
 }
